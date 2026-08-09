@@ -1343,6 +1343,37 @@ class TestSteerLifecycle:
 
 class TestStartNextQueuedTurn:
     @pytest.mark.asyncio
+    async def test_a_relay_whose_target_switched_agent_is_dropped_at_the_drain(
+        self, tmp_path
+    ):
+        """The drain must FORWARD the relay's pins, not just carry them.
+
+        Without this the pins are written at the enqueue and compared in
+        `relay_still_deliverable`, but nothing joins the two halves -- the drift
+        check silently never fires while every unit test still passes. That is
+        exactly what a mutation removing the two keyword arguments proved, so this
+        test exists to fail on it.
+        """
+        state, slot = _state(tmp_path), _slot()
+        slot.agent = "switched-away"
+        slot.queue_append(
+            "relayed text",
+            meta={
+                "session_control": {
+                    "from_slot": "chat-1",
+                    "target_agent": "authorized-agent",
+                    "target_workspace": slot.workspace or "default",
+                }
+            },
+        )
+
+        with patch.object(chat_runner, "spawn_guarded_turn") as spawn:
+            assert await chat_runner._start_next_queued_turn(state, slot) is False
+
+        assert spawn.call_count == 0, "the relay ran against the switched-in agent"
+        assert not slot._queue, "the refused relay was left on the queue"
+
+    @pytest.mark.asyncio
     async def test_empty_queue_starts_nothing(self, tmp_path):
         state, slot = _state(tmp_path), _slot()
 
