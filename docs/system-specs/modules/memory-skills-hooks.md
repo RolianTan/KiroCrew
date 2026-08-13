@@ -1024,7 +1024,7 @@ Key v2 elements (all under `skills.*`):
 - **Scripts:** deterministic procedures may ship a validated **Python** helper (`generate_scripts`, default true); statically validated (regex denylist + AST policy: no dynamic exec/import, destructive fs, process exec, network egress, ≤4 KB) and re-validated at the approve choke point.
 - **Bounding:** archive-not-delete lifecycle `active→stale(`stale_after_days`,30)→archived(`archive_after_days`,90)`, `max_auto_skills` (100) backstop, pin + cron-referenced exemptions, never-used grace floor; pending TTL `pending_ttl_days` (30).
 - **Dedupe:** embedding-free metadata comparison over all generated skills (`judge_model`).
-- **On-demand:** the `crystallize` builtin skill stages a candidate from the current session.
+- **On-demand:** the `crystallize` builtin skill stages a candidate from the current session. The dashboard also exposes a **"Create skill"** action in the assistant message action row: `POST /api/skills/-/from-session` (owner-only, refuses app and internal-secret callers) shapes the session transcript with `session_summary.extract_turns`/`render_input` and spawns a **background subagent** (`silent=True`, `approval_mode="auto"`) that follows `crystallize` to stage a candidate, so authoring never blocks the ongoing chat. Because the click is a deliberate user action, the candidate marks itself `namespace: "manual"` in `.meta.json`, and `approve_pending_skill` promotes it to the **`manual/<slug>`** namespace (`MANUAL_SKILL_NAMESPACE`) instead of `auto/<slug>` — the same staging/review/approve pattern as auto-generation, but kept out of the `auto/` archive-if-unused lifecycle so a user-captured skill is never confused with, or aged out like, an auto-generated one. Incognito/temporary sessions are refused, and completion surfaces through the existing `skills.pending_changed` notification.
 
 ### Flow
 
@@ -1115,6 +1115,7 @@ Opt-in secondary flag, gated by `auto_create_from_sessions`. When on, the consol
 No new command. Users interact via the existing skill management surface:
 
 - Off by default (opt-in). Enable: `kirocrew config set skills.auto_create_from_sessions true` (or dashboard Settings → Skills); auto-approve prose-only: `kirocrew config set skills.approval_required false`
+- Author a skill from the current chat: dashboard **Create skill** action, or `POST /api/skills/-/from-session {session_key, purpose?}` (owner-only; spawns a background subagent, non-blocking)
 - Review pending candidates: dashboard Skills → Pending review, or `GET /api/skills/-/pending`
 - List auto skills: filter `kirocrew` skill listings to those under `auto/`, or use `SkillsLoader.list_auto_skills()` in code
 - Remove unwanted auto skill: `rm -rf ~/.kiro/crew/skills/auto/<slug>` (or dashboard skill delete when UI lands)
