@@ -2219,19 +2219,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // slot's browser view already unmounts (its WebContentsView released) on the
   // slot switch. So keep-mounted follows THIS slot's tabs, not every slot's.
   const hasBrowserTab = tabsCtl.tabs.some(t => t.kind === 'browser')
-  // Which file (if any) the Files tab is showing inline — kept PER SLOT (above
-  // the SidePanel subtree so it survives panel collapse). Per-slot (not a single
-  // value reset on switch) so it stays consistent with the per-slot tab buckets
-  // AND the per-(slot,path) draft store: switching A→B→A restores A's inline
-  // editor rather than resetting it, so handleFileOpen's one-editor-per-path
-  // guard still recognizes the file as open inline after a round-trip (no
-  // competing document tab, no stale-draft overwrite).
-  const [inlinePreviewBySlot, setInlinePreviewBySlot] = useState<Record<string, string | null>>({})
-  const inlinePreviewPath = inlinePreviewBySlot[activeSlot ?? ''] ?? null
-  const inlinePreviewPathRef = useRef(inlinePreviewPath); inlinePreviewPathRef.current = inlinePreviewPath
-  const setInlinePreviewPath = useCallback((p: string | null) => {
-    setInlinePreviewBySlot(m => ({ ...m, [activeSlotRef.current ?? '']: p }))
-  }, [])
   // Find/search pane state. Declared above handleFileOpen / handleOpenDiff so
   // those handlers can call search.close() directly when opening a dock panel
   // (the right-hand dock is a single slot and the file/diff panes are
@@ -2605,18 +2592,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // The `ok` flag gates whether the file is recorded in history — 404s and
   // other HTTP failures show a placeholder in the panel but should NOT
   // pollute the history list with files that don't exist on disk.
-  const handleFileOpen = useCallback(async (filePath: string, opts?: { replaceId?: string; line?: number; endLine?: number }) => {
-    // One editor per path: if this file is already open INLINE in the Files tab,
-    // route back to that inline editor (focus the Files view) instead of
-    // spawning a competing document tab — two live editors for one on-disk file
-    // would have independent dirty buffers and could silently overwrite each
-    // other. (Uses a ref so this callback stays identity-stable.)
-    if (filePath === inlinePreviewPathRef.current) {
-      dispatch(openActivityPanel())
-      tabsCtl.setActive('files')
-      search.close()
-      return
-    }
+  const handleFileOpen = useCallback(async (filePath: string, opts?: { replaceId?: string; line?: number; endLine?: number; diffMode?: boolean }) => {
     // Plugin host integration: notify the IntelliJ plugin (if active) so
     // it can open the file natively in the IDE editor. If the plugin
     // handles file opens, skip the dashboard's DiffPanel — the user wanted
@@ -2738,7 +2714,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [queryClient, tabsCtl, dispatch, search.close])
 
-  // Open the Monaco diff panel from a file-change chip click. Closes the
+  // Open the diff panel from a file-change chip click. Closes the
   // markdown viewer and the activity panel so panels stay mutually exclusive.
   const handleOpenDiff = useCallback((filePath: string, modified: string, original: string) => {
     // If the IntelliJ plugin's file bridge is active, dispatch the event
@@ -4699,15 +4675,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     if (autoOpenGitPanel) dispatch(openActivityPanel())
   }, [activeSlot, _slotProject, projectGit?.repo, projectGitError, tabsCtl, dispatch, autoOpenGitPanel, autoOpenGitPanelKnown])
 
-  // Auto-open the folder tab for the project dir once per slot+path.
-  useEffect(() => {
-    if (!activeSlot || !_slotProject) return
-    const key = `mc-folder-panel-opened:${activeSlot}:${_slotProject}`
-    if (localStorage.getItem(key)) return
-    // Same quota guard as the git-panel effect above.
-    try { localStorage.setItem(key, '1') } catch { return }
-    tabsCtl.openFolder(_slotProject, activeSlot)
-  }, [activeSlot, _slotProject, tabsCtl])
   const [sidebarPinned, setSidebarPinned] = useState(() => localStorage.getItem('mc-sidebar-pinned') !== 'false')
   const sidebarPinnedRef = useRef(sidebarPinned)
   sidebarPinnedRef.current = sidebarPinned
@@ -7064,7 +7031,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             <SidePanel
               tabsCtl={tabsCtl}
               slot={activeSlot || ''}
-              files={touchedFiles.files} onFileOpen={handleFileOpen} onFileRemove={touchedFiles.removeFile} onFilesClear={touchedFiles.clearBySource}
+              onFileOpen={handleFileOpen}
               onArtifactOpen={handleArtifactOpen}
               projectDir={currentSlot?.project || undefined} navLinks={chatNav.links} navResolving={chatNav.resolving}
               sources={panelSources} selectedSourceUrl={selectedSourceUrl} onSelectSource={selectSourceUrl} onReconcileSource={reconcileSourceUrl}
@@ -7073,7 +7040,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               onSubmitComments={submitComments} onFileSave={handleFileSave} onClose={toggleAct}
               pins={chatPins} pinsLoading={chatPinsLoading} onJumpToPin={handleJumpToPinnedMessage} onUnpin={handleUnpinById}
               slotTitle={activeSlotTitle} chatMode={mode}
-              inlinePreviewPath={inlinePreviewPath} onInlinePreviewChange={setInlinePreviewPath}
               expanded={panelMaximized}
               fillWidth={panelFillWidth}
               canDockBottom={false}
@@ -7103,7 +7069,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               <SidePanel
                 tabsCtl={tabsCtl}
                 slot={activeSlot || ''}
-                files={touchedFiles.files} onFileOpen={handleFileOpen} onFileRemove={touchedFiles.removeFile} onFilesClear={touchedFiles.clearBySource}
+                onFileOpen={handleFileOpen}
                 onArtifactOpen={handleArtifactOpen}
                 projectDir={currentSlot?.project || undefined} navLinks={chatNav.links} navResolving={chatNav.resolving}
                 sources={panelSources} selectedSourceUrl={selectedSourceUrl} onSelectSource={selectSourceUrl} onReconcileSource={reconcileSourceUrl}
@@ -7112,7 +7078,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 onSubmitComments={submitComments} onFileSave={handleFileSave} onClose={toggleAct}
                 pins={chatPins} pinsLoading={chatPinsLoading} onJumpToPin={handleJumpToPinnedMessage} onUnpin={handleUnpinById}
                 slotTitle={activeSlotTitle} chatMode={mode}
-                inlinePreviewPath={inlinePreviewPath} onInlinePreviewChange={setInlinePreviewPath}
                 expanded={panelMaximized}
                 fillWidth={panelFillWidth}
               />
