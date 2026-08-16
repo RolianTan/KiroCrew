@@ -7745,7 +7745,11 @@
         "turn_took_credits_cost": "Il turno ha richiesto {{elapsed}} e ha consumato {{credits}} crediti ({{cost}} di costo API)",
         "use_as_plan_count": "Usa come piano ({{count}} passaggi)",
         "pin_message": "Fissa messaggio",
-        "unpin_message": "Rimuovi fissaggio"
+        "unpin_message": "Rimuovi fissaggio",
+        "create_skill": "Create skill",
+        "create_skill_hint": "Describe the skill to create from this chat.",
+        "create_skill_placeholder": "Skill purpose",
+        "create_skill_submit": "Create"
       },
       "chatFooter": {
         "compacting": "Compattazione in corso…",
@@ -8190,7 +8194,8 @@
       "upload_failed_error": "Caricamento non riuscito: {{error}}",
       "what_can_i_do_for_you": "Cosa posso fare per te?",
       "worktree_creation_returned_no_path": "La creazione del worktree non ha restituito alcun percorso",
-      "loading_earlier_messages": "Caricamento dei messaggi precedenti…"
+      "loading_earlier_messages": "Caricamento dei messaggi precedenti…",
+      "create_skill_failed_error": "Could not start skill creation: {{error}}"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 saltata — attualmente selezionata)",

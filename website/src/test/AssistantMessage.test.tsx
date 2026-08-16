@@ -547,3 +547,20 @@ describe('action footer touch sizing', () => {
     expect(screen.getByTitle('Regenerate').className).toContain('p-0.5')
   })
 })
+
+describe('create skill action', () => {
+  it('shows the button for a persisted message in a session with the handler', () => {
+    render(<AssistantMessage content="worked out the deploy runbook" isStreaming={false} slotRunning={false} onCreateSkill={() => {}} messageTs="1785" slotKey="chat-1" />)
+    expect(screen.getByTitle('Create skill')).toBeInTheDocument()
+  })
+
+  it('hides the button while streaming', () => {
+    render(<AssistantMessage content="worked out the deploy runbook" isStreaming={true} slotRunning={true} onCreateSkill={() => {}} messageTs="1785" slotKey="chat-1" />)
+    expect(screen.queryByTitle('Create skill')).not.toBeInTheDocument()
+  })
+
+  it('hides the button for an unpersisted message (no messageTs / slotKey)', () => {
+    render(<AssistantMessage content="worked out the deploy runbook" isStreaming={false} slotRunning={false} onCreateSkill={() => {}} />)
+    expect(screen.queryByTitle('Create skill')).not.toBeInTheDocument()
+  })
+})
