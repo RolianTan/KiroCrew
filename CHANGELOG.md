@@ -4,6 +4,16 @@ All notable changes to KiroCrew are documented in this file.
 
 ## [Unreleased]
 
+- **xlsx files now render inline in the file viewer** instead of a
+  download-only card. A new `GET /api/file-sheet` endpoint parses OOXML
+  workbooks server-side with openpyxl (read-only, worker thread, ZIP
+  magic-byte check, 500x100 per-sheet cap with explicit truncation flags) and
+  the new `SheetViewer` renders sheet tabs, a column-letter header, and a
+  row-number gutter. Formula cells with no cached value — the shape of every
+  agent-generated workbook — show the formula source rather than an empty
+  cell. Legacy `.xls` and ODF formats keep the download card, and any parse
+  failure degrades to it. (#3865)
+
 - **Removing a worktree in Dev Fleet no longer strands its pod's isolated
   HOME.** Reclamation was gated on the pod's unit still being ACTIVE, which the
   ordinary path never is: you stop the pod when testing ends and prune days
