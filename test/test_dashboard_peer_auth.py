@@ -720,3 +720,47 @@ def test_mcp_core_post_falls_back_to_tcp_when_socket_absent(
     monkeypatch.setattr(mcp_core, "_resolve_session_key", lambda: "dashboard:chat-1")
     out = mcp_core._get("/api/anything")
     assert "error" in out
+
+
+@_posix_only
+@pytest.mark.asyncio
+async def test_empty_secret_header_is_audited_apart_from_a_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An absent credential FILE and a wrong credential must not look alike.
+
+    The credential readers return "" when the file is missing or unreadable,
+    and the header is built unconditionally, so a caller that resolved a data
+    home holding no credential still sends the header -- with an empty value.
+    Recording that as "wrong secret" made the two causes indistinguishable in
+    the audit log, which is the only place they can be told apart: the response
+    is deliberately identical for both.
+    """
+    calls = _wire_peer(monkeypatch, resolved="")
+    mw = ta.token_auth_middleware(internal_paths=INTERNAL, internal_secret=SECRET)
+
+    req, _ = _make_request(headers={"X-Internal-Secret": ""}, unix=True)
+    resp = await mw(req, _ok_handler)
+    assert resp.status == 403
+    empty = [
+        c
+        for c in calls
+        if c.get("operation") == "internal_auth" and c.get("outcome") == "denied"
+    ]
+    assert len(empty) == 1
+    assert empty[0]["error"] == "empty secret header", (
+        "an empty credential header was audited as a mismatch"
+    )
+
+    # A genuinely wrong value keeps its own distinct reason.
+    calls2 = _wire_peer(monkeypatch, resolved="")
+    req2, _ = _make_request(headers={"X-Internal-Secret": "not-the-secret"}, unix=True)
+    resp2 = await mw(req2, _ok_handler)
+    assert resp2.status == 403
+    wrong = [
+        c
+        for c in calls2
+        if c.get("operation") == "internal_auth" and c.get("outcome") == "denied"
+    ]
+    assert len(wrong) == 1
+    assert wrong[0]["error"] == "wrong secret"

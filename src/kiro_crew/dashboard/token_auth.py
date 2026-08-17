@@ -1727,6 +1727,22 @@ def token_auth_middleware(
                     request["internal_auth"] = True
                     return await handler(request)  # type: ignore[operator]
                 # Wrong secret → deny (don't fall through)
+                #
+                # An EMPTY header value lands here too, and it is a materially
+                # different failure: the caller resolved a data home that holds
+                # no credential file (the readers return "" rather than raising)
+                # and still sent the header, because it is built
+                # unconditionally. Recording both as "wrong secret" made the two
+                # indistinguishable in the audit log, so a credential mismatch
+                # could not be told apart from a caller that had no credential
+                # at all. The response body stays identical either way -- the
+                # distinction is for the operator reading the log, not for the
+                # caller, so this leaks nothing an attacker can enumerate.
+                _reason = (
+                    "empty secret header"
+                    if not request.headers["X-Internal-Secret"]
+                    else "wrong secret"
+                )
                 _sel = _sel_fn()
                 _sel.log_api_access(
                     caller=_caller,
@@ -1734,9 +1750,9 @@ def token_auth_middleware(
                     outcome="denied",
                     source="token_auth",
                     resources=path,
-                    error="wrong secret",
+                    error=_reason,
                 )
-                _log_auth(request, "internal", "denied", "wrong secret")
+                _log_auth(request, "internal", "denied", _reason)
                 return _deny(request, "Forbidden")
             # No secret header (browser request) → verify cookie/query-param auth
             # inline to satisfy deny-by-default: positively confirm auth
@@ -1801,6 +1817,12 @@ def token_auth_middleware(
                     if not internal_secret or not hmac.compare_digest(
                         internal_secret, request.headers["X-Internal-Secret"]
                     ):
+                        # Same empty-vs-mismatch split as the loopback arm above.
+                        _reason_nl = (
+                            "empty secret header (non-loopback mixed)"
+                            if not request.headers["X-Internal-Secret"]
+                            else "wrong secret (non-loopback mixed)"
+                        )
                         _sel = _sel_fn()
                         _sel.log_api_access(
                             caller=_caller,
@@ -1808,11 +1830,9 @@ def token_auth_middleware(
                             outcome="denied",
                             source="token_auth",
                             resources=path,
-                            error="wrong secret (non-loopback mixed)",
+                            error=_reason_nl,
                         )
-                        _log_auth(
-                            request, "internal", "denied", "wrong secret (non-loopback mixed)"
-                        )
+                        _log_auth(request, "internal", "denied", _reason_nl)
                         return _deny(request, "Forbidden")
                 _valid, _uid, _reason, _app, _tok = _extract_and_validate_token(request, port)
                 if not _valid:
