@@ -164,6 +164,66 @@ export function renderReport(summary, options = {}) {
 }
 
 /**
+ * Strip the output prefix and content hash from a chunk file name, leaving the
+ * chunk's logical name.
+ *
+ * Budgets must be keyed by something stable across builds, and the emitted file
+ * name is not: `assets/main-CZ3WY91T.js` carries a content hash that changes on
+ * every edit. The logical name (`main`) is what Rollup derived from the entry,
+ * the dynamic-import source, or a `manualChunks` label, and only changes when
+ * the chunk graph itself changes.
+ */
+export function logicalChunkName(fileName) {
+  if (typeof fileName !== 'string' || !fileName) return ''
+  const base = fileName.replace(/\\/g, '/').split('/').pop() || ''
+  // Vite/Rollup content hashes are 8 chars of [A-Za-z0-9_-] before the
+  // extension. An unhashed build (or a name whose tail is not a hash) falls
+  // through to the plain basename, so the helper never returns a surprise.
+  const m = base.match(/^(.+)-[A-Za-z0-9_-]{8}\.js$/)
+  if (m) return m[1]
+  return base.replace(/\.js$/, '')
+}
+
+/**
+ * Check every JS chunk in a summary against a per-chunk byte budget.
+ *
+ * `budgets` maps a LOGICAL chunk name (see `logicalChunkName`) to an explicit
+ * byte ceiling; every chunk without an entry gets `defaultBudget`. Assets
+ * (css, images, the report itself) are not gated: the regression class this
+ * catches is "a new eager JS chunk slipped past the global warning limit", and
+ * assets have different, format-specific size stories.
+ *
+ * Returns the verdict as data rather than printing or exiting, so the
+ * arithmetic is testable without spawning a process:
+ *   - `breaches`: chunks over their budget, largest overage first, each with
+ *     the resolved budget and the overage in bytes.
+ *   - `unusedBudgets`: allowlist entries no emitted chunk matched. Not a
+ *     failure -- a renamed chunk already fails against the default budget --
+ *     but reported so stale entries get cleaned up rather than accreting.
+ */
+export function checkChunkBudgets(summary, { budgets = {}, defaultBudget } = {}) {
+  const chunks = summary && Array.isArray(summary.chunks) ? summary.chunks : []
+  const seen = new Set()
+  const breaches = []
+  for (const chunk of chunks) {
+    if (!chunk || typeof chunk.fileName !== 'string') continue
+    const logicalName = logicalChunkName(chunk.fileName)
+    const hasOverride = Object.prototype.hasOwnProperty.call(budgets, logicalName)
+    if (hasOverride) seen.add(logicalName)
+    const budget = hasOverride ? budgets[logicalName] : defaultBudget
+    const size = typeof chunk.size === 'number' && Number.isFinite(chunk.size) ? chunk.size : 0
+    if (size > budget) {
+      breaches.push({ fileName: chunk.fileName, logicalName, size, budget, overage: size - budget })
+    }
+  }
+  breaches.sort(
+    (a, b) => b.overage - a.overage || (a.fileName < b.fileName ? -1 : a.fileName > b.fileName ? 1 : 0)
+  )
+  const unusedBudgets = Object.keys(budgets).filter((name) => !seen.has(name)).sort()
+  return { breaches, unusedBudgets, checkedCount: chunks.length }
+}
+
+/**
  * Compare two summaries. Used to answer "did my change make it bigger", which is
  * the question a report is usually opened to settle.
  */
