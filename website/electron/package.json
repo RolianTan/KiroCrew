@@ -150,7 +150,10 @@
       ],
       "signtoolOptions": {
         "sign": "./scripts/sign-windows.js"
-      }
+      },
+      "publisherName": [
+        "Amazon Web Services, Inc."
+      ]
     },
     "nsis": {
       "oneClick": false,

@@ -98,6 +98,15 @@ class TestNightlyPermissions:
                 "id-token": "write",
                 "attestations": "write",
             }
+        # The Windows lane publishes S3 objects (OIDC) and attests the exact
+        # installer bytes it uploads. It does NOT hold a signing identity --
+        # signing already happened in build-windows -- so the grant is the same
+        # publish-shaped one the Linux lanes carry, and never contents:write.
+        assert _permission_block(lines, "  publish-windows-x64:") == {
+            "contents": "read",
+            "id-token": "write",
+            "attestations": "write",
+        }
         # The Docker lane pushes to ghcr.io with the workflow's own
         # GITHUB_TOKEN: packages:write is required for the push and MUST
         # stay scoped to this caller job (never workflow-level -- a
@@ -159,6 +168,12 @@ class TestReleasePermissions:
                 "id-token": "write",
                 "attestations": "write",
             }
+        # Windows publish lane: same publish-shaped grant as Linux (see nightly).
+        assert _permission_block(lines, "  publish-windows-x64:") == {
+            "contents": "read",
+            "id-token": "write",
+            "attestations": "write",
+        }
         # Docker lane: ghcr.io push via GITHUB_TOKEN (packages:write scoped
         # to this job only) + in-lane provenance (see nightly note).
         assert _permission_block(lines, "  publish-docker:") == {
@@ -246,6 +261,19 @@ class TestReusableWorkflowPermissions:
 
     def test_publish_cli_declares_exact_capabilities(self) -> None:
         assert _workflow_permissions("publish-cli.yml") == {
+            "contents": "read",
+            "id-token": "write",
+            "attestations": "write",
+        }
+
+    def test_publish_windows_declares_exact_capabilities(self) -> None:
+        """The Windows publish lane uploads to S3 (OIDC) and attests the
+        installer it uploads -- and nothing else.
+
+        It holds no signing identity: build-windows.yml already signed the
+        installer, and keeping the two apart means a compromise of the publish
+        lane cannot mint a signature. contents:write must never appear."""
+        assert _workflow_permissions("publish-windows.yml") == {
             "contents": "read",
             "id-token": "write",
             "attestations": "write",
