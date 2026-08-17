@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor, fireEvent } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { Provider } from 'react-redux'
+import { MemoryRouter } from 'react-router-dom'
+import { store } from '../store'
 import type { McpServer } from '../types'
 
 /* ── Mocks: must run before importing the component ── */
@@ -33,7 +36,15 @@ const server = (name: string): McpServer => ({
 
 function renderTab() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return render(<QueryClientProvider client={qc}><McpTab /></QueryClientProvider>)
+  return render(
+    <Provider store={store}>
+      <QueryClientProvider client={qc}>
+        <MemoryRouter>
+          <McpTab />
+        </MemoryRouter>
+      </QueryClientProvider>
+    </Provider>,
+  )
 }
 
 beforeEach(() => {
@@ -127,6 +138,73 @@ describe('McpTab needs_auth status', () => {
     expect(hint).toContain('atlassian')
     expect(hint).toContain('Kiro CLI')
     expect(hint).toMatch(/cannot see the authorization/)
+  })
+
+  /**
+   * With a challenge AND an absent runtime grant, "nobody has signed in" is a
+   * fact rather than a guess, so the row names the action. Everything below
+   * turns on that pair being present — absent evidence must keep the vaguer
+   * wording, because an older gateway sends none and its servers may be fine.
+   */
+  it('says sign-in is required when the server asked for OAuth and no grant exists', async () => {
+    mockApi.mcpServers.mockResolvedValue([
+      { ...remote('needs_auth'), authScheme: 'Bearer', authGrantPresent: false },
+    ])
+    renderTab()
+
+    await waitFor(() => expect(screen.getByText('Sign-in required')).toBeInTheDocument())
+    expect(screen.queryByText('Not verified')).not.toBeInTheDocument()
+    // Still a warning, never an error: nothing is broken, it just needs a sign-in.
+    expect(screen.getByText('Sign-in required').className).toContain('text-warn')
+    expect(screen.getByText('Sign-in required').className).not.toContain('text-danger')
+  })
+
+  it('keeps the not-verified wording once a runtime grant exists', async () => {
+    mockApi.mcpServers.mockResolvedValue([
+      { ...remote('needs_auth'), authScheme: 'Bearer', authGrantPresent: true },
+    ])
+    renderTab()
+
+    await waitFor(() => expect(screen.getByText('Not verified')).toBeInTheDocument())
+    expect(screen.queryByText('Sign-in required')).not.toBeInTheDocument()
+  })
+
+  it('keeps the not-verified wording when the gateway sent no authorization evidence', async () => {
+    // An older gateway, or a 401 with no challenge. Telling this user to sign in
+    // would be a guess about a server that may already be working.
+    mockApi.mcpServers.mockResolvedValue([remote('needs_auth')])
+    renderTab()
+
+    await waitFor(() => expect(screen.getByText('Not verified')).toBeInTheDocument())
+    expect(screen.queryByRole('button', { name: /Authorize/ })).not.toBeInTheDocument()
+  })
+
+  it('offers Authorize only on a row that needs a sign-in', async () => {
+    mockApi.mcpServers.mockResolvedValue([
+      { ...remote('needs_auth'), authScheme: 'Bearer', authGrantPresent: false },
+    ])
+    renderTab()
+
+    const btn = await screen.findByRole('button', { name: /Authorize/ })
+    // The tooltip has to say where the sign-in actually happens — the button
+    // opens a chat session because that is where Kiro CLI raises the prompt.
+    expect(btn.getAttribute('title') || '').toMatch(/chat session/i)
+    expect(btn.getAttribute('title') || '').toContain('atlassian')
+  })
+
+  it('tells the user a pasted token cannot satisfy an OAuth server', async () => {
+    mockApi.mcpServers.mockResolvedValue([
+      {
+        ...remote('error'),
+        error: 'HTTP 401',
+        headers: { Authorization: '[REDACTED: credential]' },
+        authScheme: 'Bearer',
+      },
+    ])
+    renderTab()
+
+    await waitFor(() => expect(screen.getByText('HTTP 401')).toBeInTheDocument())
+    expect(screen.getByText(/static Authorization header cannot satisfy it/)).toBeInTheDocument()
   })
 
   it('leaves every other status without a hover explanation', async () => {

@@ -9564,7 +9564,12 @@
         "undo": "Отменить",
         "uninstall": "Удалить",
         "unknown": "Неизвестно",
-        "declared": "Объявлено"
+        "declared": "Объявлено",
+        "sign_in_required": "Требуется вход",
+        "sign_in_required_help": "Этот сервер использует OAuth, и вход ещё не выполнен. Откройте сеанс чата — Kiro CLI покажет там ссылку для подтверждения.",
+        "authorize": "Авторизовать",
+        "authorize_help": "Открыть новый сеанс чата для входа в {{name}}",
+        "oauth_not_a_static_token": "Этот сервер выполняет вход через OAuth, поэтому статический заголовок Authorization ему не подходит."
       },
       "memoryGraphTab": {
         "all_count": "Все ({{count}})",

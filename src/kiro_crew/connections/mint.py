@@ -178,7 +178,7 @@ def _acp_client_factory() -> Any:
     return AcpClient
 
 
-async def _grant_observed(mcp_url: str) -> bool:
+async def grant_observed(mcp_url: str) -> bool:
     """:func:`grant_present` off the loop, SEL-audited when a grant is observed.
 
     Audited on the TRUE result only, and deliberately NOT once per stat. The
@@ -540,7 +540,7 @@ async def _mint_watcher(slug: str, mcp_url: str, token: str) -> None:
         deadline = time.monotonic() + _MINT_TTL_SECONDS
         while time.monotonic() < deadline:
             await asyncio.sleep(_MINT_GRANT_POLL_SECONDS)
-            if await _grant_observed(mcp_url):
+            if await grant_observed(mcp_url):
                 doomed: MintState | None = None
                 async with _mints_lock:
                     entry = _mints.get(slug)
@@ -659,7 +659,7 @@ async def start_oauth_mint(
     # aged orphans. Off-loop: it reads and rewrites the manifest, and may unlink.
     await asyncio.to_thread(_sweep_mint_specs)
 
-    if await _grant_observed(mcp_url):
+    if await grant_observed(mcp_url):
         # Consent already exists (a reconnect): no URL is needed.
         async with _mints_lock:
             if _mints.get(slug, {}).get("token") == my_token:

@@ -438,6 +438,18 @@ export interface McpServer {
   /** Wall-clock seconds of the probe that produced `status`; 0/absent = never probed. */
   probedAt?: number
   presence?: McpScopePresence
+  /** `"Bearer"` when the last probe met a recognisable OAuth challenge. Absent
+   *  means the probe learned nothing about authorization — NOT that none is
+   *  needed, so it must not be rendered as "no sign-in required". */
+  authScheme?: string
+  /** Whether the kiro-cli runtime already holds a grant for this url. Only sent
+   *  alongside `authScheme`; absent is "unknown", which is why the sign-in
+   *  wording is gated on an explicit `false`. */
+  authGrantPresent?: boolean
+  /** Scopes the challenge asked for, and the RFC 9728 metadata URL it named.
+   *  Both are the server's own public claims — safe to show, never secret. */
+  authScopes?: string[]
+  authResourceMetadata?: string
   /** Optional status-enrichment fields supplied by newer runtimes. */
   accountLabel?: string
   connectedSince?: string

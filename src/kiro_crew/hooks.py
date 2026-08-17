@@ -2651,7 +2651,7 @@ _AUDIT_ONLY_READ_IDS: dict[str, str] = {
     # can enter the process, and the name is a hex digest of a registry-declared
     # provider URL, so no other path in that directory is expressible. Audited on
     # the observation a caller acts on, not per poll; see
-    # ``mint._grant_observed`` for why that boundary is not fail-closed.
+    # ``mint.grant_observed`` for why that boundary is not fail-closed.
     "connections_mint.oauth_grant_presence": ".aws/sso/cache/<sha256(mcp_url)>.token.json",
 }
 

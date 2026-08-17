@@ -1829,6 +1829,178 @@ class TestProbeRemote:
         # Other statuses are never needs_auth.
         assert _needs_authorization(500, {}, {}) is False
 
+    def test_the_challenge_parser_reads_a_real_oauth_challenge(self) -> None:
+        """The RFC 9728 pointer and the requested scopes both come back."""
+        from kiro_crew.mcp_discovery import _parse_bearer_challenge
+
+        metadata, scopes = _parse_bearer_challenge(
+            'Bearer resource_metadata="https://mcp.example.ai/.well-known/'
+            'oauth-protected-resource/mcp", scope="openid email offline_access"'
+        )
+        assert metadata == "https://mcp.example.ai/.well-known/oauth-protected-resource/mcp"
+        assert scopes == ["openid", "email", "offline_access"]
+
+    @pytest.mark.parametrize(
+        "challenge",
+        [
+            pytest.param("", id="empty"),
+            pytest.param("Basic realm=\"x\"", id="another-scheme-entirely"),
+            pytest.param('Bearer resource_metadata="http://insecure.example/x"', id="http-metadata"),
+            pytest.param(
+                'Bearer resource_metadata="javascript:alert(1)"', id="non-http-scheme-metadata"
+            ),
+            pytest.param('Bearer resource_metadata=' + "x" * 4096, id="over-length"),
+            pytest.param(None, id="not-a-string-at-all"),
+        ],
+    )
+    def test_the_challenge_parser_yields_nothing_it_cannot_vouch_for(self, challenge) -> None:
+        """Anything unrecognised or unsafe to render degrades to empty, never raises.
+
+        The metadata URL is shown to the user as the server's own claim about
+        itself, so a plaintext or script URL from an unauthenticated endpoint is
+        dropped rather than passed along.
+        """
+        from kiro_crew.mcp_discovery import _parse_bearer_challenge
+
+        assert _parse_bearer_challenge(challenge) == ("", [])
+
+    def test_the_challenge_parser_bounds_untrusted_scope_lists(self) -> None:
+        """A scope list cannot grow the payload without limit."""
+        from kiro_crew.mcp_discovery import (
+            _MAX_CHALLENGE_SCOPES,
+            _MAX_SCOPE_LEN,
+            _parse_bearer_challenge,
+        )
+
+        many = " ".join(f"s{i}" for i in range(_MAX_CHALLENGE_SCOPES * 3))
+        _, scopes = _parse_bearer_challenge(f'Bearer scope="{many}"')
+        assert len(scopes) == _MAX_CHALLENGE_SCOPES
+
+        long_one = "x" * (_MAX_SCOPE_LEN + 1)
+        _, scopes = _parse_bearer_challenge(f'Bearer scope="openid {long_one}"')
+        assert scopes == ["openid"]
+
+    @pytest.mark.asyncio
+    async def test_a_tokenless_401_records_the_challenge_and_an_absent_grant(self) -> None:
+        """needs_auth carries the evidence that separates it from 'signed in already'."""
+        server = McpServerInfo(name="remote", url="https://example.com/mcp")
+
+        resp = MagicMock()
+        resp.status = 401
+        resp.headers = {
+            "WWW-Authenticate": 'Bearer resource_metadata="https://example.com/.well-known/x",'
+            ' scope="openid email"'
+        }
+        resp.__aenter__ = AsyncMock(return_value=resp)
+        resp.__aexit__ = AsyncMock(return_value=False)
+
+        mock_session = MagicMock()
+        mock_session.post = MagicMock(return_value=resp)
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("kiro_crew.mcp_discovery.aiohttp.ClientSession", return_value=mock_session), patch(
+            "kiro_crew.mcp_discovery._runtime_grant_present", AsyncMock(return_value=False)
+        ):
+            result = await _probe_remote(server)
+
+        assert result.status == "needs_auth"
+        assert result.auth_scheme == "Bearer"
+        assert result.auth_resource_metadata == "https://example.com/.well-known/x"
+        assert result.auth_scopes == ["openid", "email"]
+        assert result.auth_grant_present is False
+        payload = result.to_dict()
+        assert payload["authScheme"] == "Bearer"
+        assert payload["authGrantPresent"] is False
+
+    @pytest.mark.asyncio
+    async def test_an_existing_runtime_grant_is_reported_alongside_needs_auth(self) -> None:
+        """A held grant is what makes 'cannot verify' the honest wording rather than 'sign in'."""
+        server = McpServerInfo(name="remote", url="https://example.com/mcp")
+
+        resp = MagicMock()
+        resp.status = 401
+        resp.headers = {"WWW-Authenticate": 'Bearer scope="openid"'}
+        resp.__aenter__ = AsyncMock(return_value=resp)
+        resp.__aexit__ = AsyncMock(return_value=False)
+
+        mock_session = MagicMock()
+        mock_session.post = MagicMock(return_value=resp)
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("kiro_crew.mcp_discovery.aiohttp.ClientSession", return_value=mock_session), patch(
+            "kiro_crew.mcp_discovery._runtime_grant_present", AsyncMock(return_value=True)
+        ):
+            result = await _probe_remote(server)
+
+        assert result.status == "needs_auth"
+        assert result.auth_grant_present is True
+
+    @pytest.mark.asyncio
+    async def test_a_rejected_static_credential_still_records_the_oauth_challenge(self) -> None:
+        """The error branch keeps the challenge, because that is the actionable part.
+
+        A pasted token against an OAuth-only server is a real error — but the
+        useful thing to say is that the server wants a sign-in, not that it
+        answered 401.
+        """
+        server = McpServerInfo(
+            name="remote",
+            url="https://example.com/mcp",
+            headers={"Authorization": "Bearer pasted-placeholder"},
+        )
+
+        resp = MagicMock()
+        resp.status = 401
+        resp.headers = {"WWW-Authenticate": 'Bearer scope="openid offline_access"'}
+        resp.__aenter__ = AsyncMock(return_value=resp)
+        resp.__aexit__ = AsyncMock(return_value=False)
+
+        mock_session = MagicMock()
+        mock_session.post = MagicMock(return_value=resp)
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("kiro_crew.mcp_discovery.aiohttp.ClientSession", return_value=mock_session), patch(
+            "kiro_crew.mcp_discovery._runtime_grant_present", AsyncMock(return_value=False)
+        ):
+            result = await _probe_remote(server)
+
+        assert result.status == "error"
+        assert "401" in result.error
+        assert result.auth_scheme == "Bearer"
+        assert result.auth_scopes == ["openid", "offline_access"]
+
+    def test_a_probe_that_learned_nothing_emits_no_auth_keys(self) -> None:
+        """An absent key is what lets a client tell 'unknown' from 'no grant'."""
+        payload = McpServerInfo(name="remote", url="https://example.com/mcp").to_dict()
+
+        assert "authScheme" not in payload
+        assert "authGrantPresent" not in payload
+
+    def test_the_probe_cache_round_trips_the_authorization_evidence(self) -> None:
+        """The panel is served from this cache, so the evidence has to survive it."""
+        from kiro_crew.mcp_discovery import _cache_probe, probe_metadata
+
+        server = McpServerInfo(
+            name="cached-remote",
+            url="https://example.com/mcp",
+            status="needs_auth",
+            auth_scheme="Bearer",
+            auth_scopes=["openid"],
+            auth_resource_metadata="https://example.com/.well-known/x",
+            auth_grant_present=True,
+        )
+        _cache_probe(server)
+
+        cached = probe_metadata("cached-remote")
+        assert cached is not None
+        assert cached.auth_scheme == "Bearer"
+        assert cached.auth_scopes == ["openid"]
+        assert cached.auth_resource_metadata == "https://example.com/.well-known/x"
+        assert cached.auth_grant_present is True
+
     @pytest.mark.asyncio
     async def test_probe_remote_connection_error(self) -> None:
         """Connection failure sets error status."""

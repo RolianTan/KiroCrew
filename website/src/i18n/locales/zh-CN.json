@@ -9225,7 +9225,12 @@
         "undo": "撤销",
         "uninstall": "卸载",
         "unknown": "未知",
-        "declared": "仅声明"
+        "declared": "仅声明",
+        "sign_in_required": "需要登录",
+        "sign_in_required_help": "此服务器使用 OAuth，且尚未完成登录。打开一个聊天会话，Kiro CLI 会在其中显示授权链接。",
+        "authorize": "授权",
+        "authorize_help": "打开新的聊天会话以登录 {{name}}",
+        "oauth_not_a_static_token": "此服务器通过 OAuth 登录，因此静态 Authorization 标头无法满足它。"
       },
       "memoryGraphTab": {
         "all_count": "全部（{{count}}）",

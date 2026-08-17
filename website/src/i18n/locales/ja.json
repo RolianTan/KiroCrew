@@ -9225,7 +9225,12 @@
         "undo": "元に戻す",
         "uninstall": "アンインストール",
         "unknown": "不明",
-        "declared": "宣言のみ"
+        "declared": "宣言のみ",
+        "sign_in_required": "サインインが必要",
+        "sign_in_required_help": "このサーバーは OAuth を使用しており、まだサインインが完了していません。チャットセッションを開くと、Kiro CLI が承認リンクを表示します。",
+        "authorize": "承認",
+        "authorize_help": "{{name}} にサインインするために新しいチャットセッションを開きます",
+        "oauth_not_a_static_token": "このサーバーは OAuth でサインインするため、静的な Authorization ヘッダーでは接続できません。"
       },
       "memoryGraphTab": {
         "all_count": "すべて（{{count}}）",

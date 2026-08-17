@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor, fireEvent } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { Provider } from 'react-redux'
+import { MemoryRouter } from 'react-router-dom'
+import { store } from '../store'
 
 /* ── Mocks: must run before importing the component ── */
 const mockApi = vi.hoisted(() => ({
@@ -31,7 +34,15 @@ const SERVER = {
 
 function renderTab() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
-  return render(<QueryClientProvider client={qc}><McpTab /></QueryClientProvider>)
+  return render(
+    <Provider store={store}>
+      <QueryClientProvider client={qc}>
+        <MemoryRouter>
+          <McpTab />
+        </MemoryRouter>
+      </QueryClientProvider>
+    </Provider>,
+  )
 }
 
 beforeEach(() => {

@@ -9338,7 +9338,12 @@
         "undo": "अनडू",
         "uninstall": "अनइंस्टॉल करें",
         "unknown": "अज्ञात",
-        "declared": "घोषित"
+        "declared": "घोषित",
+        "sign_in_required": "साइन-इन आवश्यक",
+        "sign_in_required_help": "यह सर्वर OAuth का उपयोग करता है और अभी तक कोई साइन-इन पूरा नहीं हुआ है। एक चैट सत्र खोलें — Kiro CLI वहाँ एक स्वीकृति लिंक दिखाता है।",
+        "authorize": "अधिकृत करें",
+        "authorize_help": "{{name}} में साइन इन करने के लिए नया चैट सत्र खोलें",
+        "oauth_not_a_static_token": "यह सर्वर OAuth से साइन इन करता है, इसलिए स्थिर Authorization हेडर इसके लिए पर्याप्त नहीं है।"
       },
       "memoryGraphTab": {
         "all_count": "सभी ({{count}})",

@@ -352,6 +352,14 @@ class _ProbeResult:
     # UI can render "as of <time>". Two clocks, one write, no drift.
     probed_at_wall: float = 0.0
     probe_mode: str = "handshake"
+    # Authorization evidence from the probe response. Cached alongside the status
+    # because the panel is served from this cache for the whole TTL — a badge that
+    # only distinguished sign-in state on the one uncached read would spend almost
+    # all of its life showing the vaguer wording.
+    auth_scheme: str = ""
+    auth_scopes: list[str] = field(default_factory=list)
+    auth_resource_metadata: str = ""
+    auth_grant_present: bool = False
 
 
 # Module-level probe cache: server name → result
@@ -413,6 +421,10 @@ def _cache_probe(server: McpServerInfo) -> None:
         tool_annotations=[dict(a) for a in server.tool_annotations],
         probed_at_wall=server.probed_at,
         probe_mode=server.probe_mode,
+        auth_scheme=server.auth_scheme,
+        auth_scopes=list(server.auth_scopes),
+        auth_resource_metadata=server.auth_resource_metadata,
+        auth_grant_present=server.auth_grant_present,
     )
 
 
@@ -605,6 +617,19 @@ class McpServerInfo:
     # API payload so a badge can say WHEN it was true — the caches legitimately
     # serve results up to their TTL, and an undated "Online" reads as "now".
     probed_at: float = 0.0
+    # -- authorization state (remote probes only) ---------------------------
+    # ``"Bearer"`` when the probe response carried a recognisable OAuth challenge,
+    # empty when it did not. Empty is genuinely "not known to need OAuth" and not
+    # "does not need it": a server can refuse a tokenless probe without saying why.
+    auth_scheme: str = ""
+    # Scopes the challenge asked for, and the RFC 9728 metadata URL it advertised.
+    # Both are the server's own public claims about itself — non-secret, and the
+    # only concrete evidence the UI can show for why a row cannot be verified.
+    auth_scopes: list[str] = field(default_factory=list)
+    auth_resource_metadata: str = ""
+    # Whether the runtime holds a grant for this url. Only meaningful alongside
+    # ``auth_scheme``; see :func:`_runtime_grant_present`.
+    auth_grant_present: bool = False
 
     @property
     def is_remote(self) -> bool:
@@ -639,6 +664,17 @@ class McpServerInfo:
                 d["scopes"] = list(self.scopes)
             if self.client_id:
                 d["clientId"] = self.client_id
+            # Gated on ``auth_scheme`` as a set, so an absent key means "this probe
+            # learned nothing about authorization" and a present ``authGrantPresent``
+            # is always a real observation. A client that cannot tell those apart
+            # would render "sign-in required" for every unprobed remote row.
+            if self.auth_scheme:
+                d["authScheme"] = self.auth_scheme
+                d["authGrantPresent"] = self.auth_grant_present
+                if self.auth_scopes:
+                    d["authScopes"] = list(self.auth_scopes)
+                if self.auth_resource_metadata:
+                    d["authResourceMetadata"] = self.auth_resource_metadata
         if self.disabled_tools:
             d["disabledTools"] = self.disabled_tools
         if self.disabled:
@@ -1174,6 +1210,16 @@ def list_servers() -> list[McpServerInfo]:
         s.error = error
         s.probed_at = probed_at
         s.probe_mode = probe_mode
+        # Read through ``probe_metadata`` rather than widening ``_get_cached``'s
+        # tuple, and taken even from an expired entry: a server that demanded
+        # OAuth an hour ago still demands it, so the wording should not regress
+        # to the vaguer form the moment the TTL lapses.
+        cached = probe_metadata(s.name)
+        if cached is not None:
+            s.auth_scheme = cached.auth_scheme
+            s.auth_scopes = list(cached.auth_scopes)
+            s.auth_resource_metadata = cached.auth_resource_metadata
+            s.auth_grant_present = cached.auth_grant_present
 
     return list(servers.values())
 
@@ -1223,6 +1269,70 @@ def _needs_authorization(
     return False
 
 
+# A challenge comes from an endpoint that has not authenticated anything yet, so
+# every bound here is on untrusted input. Over-long values are DISCARDED rather
+# than truncated: a clipped metadata URL would still render as a link and would
+# point somewhere other than the server named it.
+_MAX_CHALLENGE_LEN = 2048
+_MAX_CHALLENGE_SCOPES = 32
+_MAX_SCOPE_LEN = 64
+_CHALLENGE_PARAM_RE = re.compile(r'([A-Za-z_][A-Za-z0-9_-]*)\s*=\s*"([^"]*)"')
+
+
+def _parse_bearer_challenge(header_value: str) -> tuple[str, list[str]]:
+    """The ``resource_metadata`` URL and ``scope`` list from a Bearer challenge.
+
+    Recognising OAuth is the whole job here, so this is deliberately not a general
+    RFC 9110 auth-param parser: a challenge naming another scheme, or one whose
+    params are unquoted, yields empty values and the caller falls back to the
+    status code alone.
+
+    ``resource_metadata`` is kept only when it is https — the value is rendered to
+    the user as the server's own identity claim (RFC 9728 §5.1), and an http or
+    javascript URL arriving from an unauthenticated endpoint is not that.
+
+    Total by construction: a probe must never fail because of the shape of a
+    header, so anything that is not a string is simply not a challenge.
+    """
+    if not isinstance(header_value, str) or not header_value:
+        return "", []
+    if len(header_value) > _MAX_CHALLENGE_LEN:
+        return "", []
+    if not header_value.lstrip().lower().startswith("bearer"):
+        return "", []
+    params = {k.lower(): v for k, v in _CHALLENGE_PARAM_RE.findall(header_value)}
+    resource_metadata = params.get("resource_metadata", "")
+    if not resource_metadata.lower().startswith("https://"):
+        resource_metadata = ""
+    scopes = [s for s in params.get("scope", "").split() if len(s) <= _MAX_SCOPE_LEN]
+    return resource_metadata, scopes[:_MAX_CHALLENGE_SCOPES]
+
+
+async def _runtime_grant_present(mcp_url: str) -> bool:
+    """Whether the kiro-cli runtime already holds an OAuth grant for ``mcp_url``.
+
+    This is what separates "nobody has signed in" from "signed in, but this probe
+    cannot see it" — the two states a bare 401 conflates. The probe holds no token
+    of its own (Kiro Crew stores no credentials), so the runtime's own artifacts
+    are the only evidence available, and they are stat-ed for presence, never read.
+
+    Imported inside the call on purpose: ``connections.mint`` reaches the agent and
+    ACP layers, and importing it at module scope would tie MCP discovery to that
+    graph. Single-sourcing the cache-key derivation matters more than the import
+    site — a second copy would silently rot against the runtime's hashing.
+
+    Never raises: an unreadable cache home means "no observable grant", which
+    degrades the badge to the same wording used when the answer is unknown.
+    """
+    from kiro_crew.connections.mint import grant_observed
+
+    try:
+        return await grant_observed(mcp_url)
+    except OSError:
+        logger.debug("MCP probe: grant presence unreadable for %r", mcp_url, exc_info=True)
+        return False
+
+
 async def _probe_remote(server: McpServerInfo) -> McpServerInfo:
     """Probe a remote Streamable HTTP MCP server via POST."""
     server.status = "probing"
@@ -1249,6 +1359,18 @@ async def _probe_remote(server: McpServerInfo) -> McpServerInfo:
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(server.url, json=init_body, headers=hdrs) as resp:
                 if resp.status != 200:
+                    # Parsed before the branch, so it is recorded on BOTH outcomes.
+                    # A rejected static credential is still an OAuth server, and
+                    # that is precisely the case where the user most needs to be
+                    # told the token they pasted is the wrong kind of credential.
+                    metadata_url, challenge_scopes = _parse_bearer_challenge(
+                        resp.headers.get("WWW-Authenticate", "")
+                    )
+                    if metadata_url or challenge_scopes:
+                        server.auth_scheme = "Bearer"
+                        server.auth_resource_metadata = metadata_url
+                        server.auth_scopes = challenge_scopes
+                        server.auth_grant_present = await _runtime_grant_present(server.url)
                     if _needs_authorization(resp.status, resp.headers, server.headers):
                         # A remote OAuth server answers a tokenless probe with
                         # 401 (or 403 + WWW-Authenticate). That is the expected
