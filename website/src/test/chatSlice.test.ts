@@ -2067,12 +2067,36 @@ describe('sseThinkingChunk (model reasoning)', () => {
     state = reducer(state, sseChatMessage({ slot: 'chat-1', role: 'chunk', content: 'answer', seq: 0 }))
     expect(state.messages.filter(m => m.role === 'thinking')).toHaveLength(0)
   })
+
+  it('opens a NEW block for each reasoning burst across tool calls', () => {
+    let state = reducer(active, sseThinkingChunk({ slot: 'chat-1', content: 'burst one' }))
+    state = reducer(state, sseChatMessage({ slot: 'chat-1', role: 'tool', content: '🔧 grep', meta: { tool_call_id: 't1' } }))
+    state = reducer(state, sseThinkingChunk({ slot: 'chat-1', content: 'burst two' }))
+    state = reducer(state, sseChatMessage({ slot: 'chat-1', role: 'tool', content: '🔧 fs_read', meta: { tool_call_id: 't2' } }))
+    state = reducer(state, sseThinkingChunk({ slot: 'chat-1', content: 'burst three' }))
+    const thinking = state.messages.filter(m => m.role === 'thinking')
+    expect(thinking.map(m => m.content)).toEqual(['burst one', 'burst two', 'burst three'])
+    // emission order preserved: each burst sits next to the step it explains
+    expect(state.messages.map(m => m.role)).toEqual(['thinking', 'tool', 'thinking', 'tool', 'thinking'])
+  })
+
+  it('splices a post-tool burst ABOVE the turn\u2019s still-open streaming row', () => {
+    let state = reducer(active, sseThinkingChunk({ slot: 'chat-1', content: 'burst one' }))
+    state = reducer(state, sseChatMessage({ slot: 'chat-1', role: 'chunk', content: 'partial answer', seq: 0 }))
+    state = reducer(state, sseChatMessage({ slot: 'chat-1', role: 'tool', content: '🔧 grep', meta: { tool_call_id: 't1' } }))
+    state = reducer(state, sseThinkingChunk({ slot: 'chat-1', content: 'burst two' }))
+    expect(state.messages.map(m => m.role)).toEqual(['thinking', 'tool', 'thinking', 'streaming'])
+    // the turn's text keeps accumulating into that same row, below both blocks
+    state = reducer(state, sseChatMessage({ slot: 'chat-1', role: 'chunk', content: ' plus more', seq: 1 }))
+    expect(state.messages.filter(m => m.role === 'streaming')).toHaveLength(1)
+    expect(state.messages.filter(m => m.role === 'thinking')).toHaveLength(2)
+  })
 })
 
 describe('thinking survives refreshSlot (client-only reasoning)', () => {
   const base = reducer(undefined, { type: '@@INIT' })
 
-  const refreshPayload = (key: string, messages: { role: string; content: string; cls?: string; ts?: string }[]) => ({
+  const refreshPayload = (key: string, messages: { role: string; content: string; cls?: string; ts?: string; meta?: Record<string, unknown> }[]) => ({
     key, messages, running: false, hasMore: false, total: messages.length, stopping: false,
   })
 
@@ -2109,6 +2133,31 @@ describe('thinking survives refreshSlot (client-only reasoning)', () => {
     state = reducer(state, refreshSlot.fulfilled(payload, 'r1', 'chat-1'))
     state = reducer(state, refreshSlot.fulfilled(payload, 'r2', 'chat-1'))
     expect(state.messages.filter(m => m.role === 'thinking')).toHaveLength(1)
+  })
+
+  it('keeps every burst of a multi-tool turn anchored to its own tool call', () => {
+    let state = reducer(base, setActiveSlot('chat-1'))
+    state = reducer(state, sseThinkingChunk({ slot: 'chat-1', content: 'why t1' }))
+    state = reducer(state, sseChatMessage({ slot: 'chat-1', role: 'tool', content: '🔧 grep', meta: { tool_call_id: 't1' } }))
+    state = reducer(state, sseThinkingChunk({ slot: 'chat-1', content: 'why t2' }))
+    state = reducer(state, sseChatMessage({ slot: 'chat-1', role: 'tool', content: '🔧 fs_read', meta: { tool_call_id: 't2' } }))
+    state = reducer(state, sseChatMessage({ slot: 'chat-1', role: 'chunk', content: 'The answer', seq: 0 }))
+    state = reducer(state, sseChatMessage({ slot: 'chat-1', role: '_done', content: '' }))
+
+    // The turn's visible text is ONE streaming row, so the tool ids are the only
+    // thing that can tell the two bursts apart across the refresh.
+    const payload = refreshPayload('chat-1', [
+      { role: 'tool', content: '🔧 grep', cls: '', meta: { tool_call_id: 't1' } },
+      { role: 'tool', content: '🔧 fs_read', cls: '', meta: { tool_call_id: 't2' } },
+      { role: 'assistant', content: 'The answer', cls: 'msg msg-a' },
+    ])
+    state = reducer(state, refreshSlot.fulfilled(payload, 'r1', 'chat-1'))
+
+    expect(state.messages.map(m => m.role)).toEqual(['thinking', 'tool', 'thinking', 'tool', 'assistant'])
+    expect(state.messages.filter(m => m.role === 'thinking').map(m => m.content)).toEqual(['why t1', 'why t2'])
+    // idempotent: a second refresh neither duplicates a block nor drifts one down
+    state = reducer(state, refreshSlot.fulfilled(payload, 'r2', 'chat-1'))
+    expect(state.messages.map(m => m.role)).toEqual(['thinking', 'tool', 'thinking', 'tool', 'assistant'])
   })
 })
 

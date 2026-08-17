@@ -1016,9 +1016,17 @@ const isTurnBoundaryUser = (m: { role: string; meta?: Record<string, unknown> })
 /** Re-insert client-only reasoning (`thinking`) messages into a server-refreshed
  *  message list. The backend never persists reasoning, so a refresh (e.g. the
  *  one fired on chat_done) would otherwise drop the thinking block the instant a
- *  turn finishes. Each preserved block is anchored to the assistant message that
- *  immediately followed it in the old list (matched by finalized content) and
- *  re-inserted just before it. At most one reasoning block per assistant. Any
+ *  turn finishes. Each preserved block is anchored to the row that immediately
+ *  followed it in the old list and re-inserted just before it: the tool call it
+ *  reasoned its way to (matched by `tool_call_id`) when there is one, otherwise
+ *  the assistant message it introduced (matched by finalized content).
+ *
+ *  A tool call is the sharper anchor, and for a turn with SEVERAL reasoning
+ *  bursts the only usable one: every burst but the last is followed by its own
+ *  tool row, whose id survives into server history, whereas the turn's visible
+ *  text lives in ONE client-side `streaming` row for all segments and so cannot
+ *  tell the bursts apart — anchoring them all on that text would match one block
+ *  and park the rest at the tail. Each anchor is consumed at most once. Any
  *  block whose anchor isn't found is appended so it is never silently lost.
  *  Returns `incoming` unchanged (reference-equal) when there is nothing to
  *  preserve. */
@@ -1026,13 +1034,20 @@ function mergePreservedThinking<M extends { role: string; content: string; cls?:
   existing: M[],
   incoming: M[],
 ): M[] {
-  const preserved: Array<{ msg: M; anchor: string | null }> = []
+  const toolId = (m: M): string => {
+    const id = m.role === 'tool' ? m.meta?.tool_call_id : undefined
+    return typeof id === 'string' ? id : ''
+  }
+  const preserved: Array<{ msg: M; anchor: string | null; onTool: boolean }> = []
   for (let i = 0; i < existing.length; i++) {
     const m = existing[i]
     if (m.role !== 'thinking' || !m.content) continue
     let anchor: string | null = null
+    let onTool = false
     for (let j = i + 1; j < existing.length; j++) {
       const r = existing[j].role
+      const tid = toolId(existing[j])
+      if (tid) { anchor = tid; onTool = true; break }
       if (r === 'assistant' || r === 'streaming') { anchor = existing[j].content.trimEnd(); break }
       // A confirmed steer does not end this block's turn, so the assistant row
       // after it is still its anchor. Breaking here instead leaves `anchor`
@@ -1041,16 +1056,18 @@ function mergePreservedThinking<M extends { role: string; content: string; cls?:
       // again, so it stays there and is re-appended on every later refresh.
       if (isTurnBoundaryUser(existing[j])) break
     }
-    preserved.push({ msg: m, anchor })
+    preserved.push({ msg: m, anchor, onTool })
   }
   if (!preserved.length) return incoming
   const used = new Set<number>()
   const result: M[] = []
   for (const item of incoming) {
-    if (item.role === 'assistant') {
-      const c = item.content.trimEnd()
+    const tid = toolId(item)
+    const key = tid || (item.role === 'assistant' ? item.content.trimEnd() : '')
+    if (key) {
       for (let p = 0; p < preserved.length; p++) {
-        if (!used.has(p) && preserved[p].anchor === c) {
+        if (used.has(p) || preserved[p].onTool !== !!tid) continue
+        if (preserved[p].anchor === key) {
           result.push({ ...preserved[p].msg }); used.add(p); break
         }
       }
@@ -2853,22 +2870,36 @@ const chatSlice = createSlice({
     },
     /** Handle chat messages pushed via global SSE/WS (works after refresh). */
     /** Accumulate streamed model reasoning (`chat_thinking` WS event) into a
-     *  single content-bearing `thinking`-role message for the current turn.
-     *  Reasoning normally arrives before the visible answer, so the block sits
-     *  above the streamed assistant text. Scans back to the turn boundary (the
-     *  last non-steer user message) to keep one reasoning block per turn. */
+     *  content-bearing `thinking`-role message — ONE BLOCK PER REASONING BURST.
+     *  A turn that reasons, calls a tool, then reasons again therefore renders
+     *  two blocks, each next to the step it explains. Scanning all the way back
+     *  to the turn boundary instead appends every later burst into the FIRST
+     *  burst's block, so a multi-tool turn collapses all of its reasoning under
+     *  the opening block.
+     *
+     *  A burst is closed by any row that is not part of it, with two rows that
+     *  sit INSIDE the turn and so do not close it:
+     *   - the turn's open `streaming` row — a turn's visible text accumulates
+     *     into ONE row that stays open across tool calls (the backend flushes
+     *     each segment without broadcasting), so it is the bottom of the turn
+     *     and a new block is spliced ABOVE it, exactly as the `tool` branch
+     *     inserts ahead of it;
+     *   - a CONFIRMED steer, which is injected into the running turn, so
+     *     reasoning after it continues the burst it interrupted. An
+     *     unconfirmed (optimistic) steer is a raced real turn and does close
+     *     the burst — see isTurnBoundaryUser. */
     sseThinkingChunk(state, action: PayloadAction<{ slot: string; content: string }>) {
       const { slot, content } = action.payload
       if (slot !== state.activeSlot || !content) return
-      for (let i = state.messages.length - 1; i >= 0; i--) {
-        if (state.messages[i].role === 'thinking') { state.messages[i].content += content; return }
-        // A confirmed steer does not start a new turn, so reasoning after it
-        // belongs to this turn's existing block. Treating it as a boundary mints
-        // a second block for one answer, and that block lands at the end of the
-        // array, below the answer.
-        if (isTurnBoundaryUser(state.messages[i])) break
-      }
-      state.messages.push({ role: 'thinking', content, cls: '', meta: { clientTs: mintMsgId() } })
+      // Insertion point: above the turn's open text row, never below it.
+      let end = state.messages.length
+      while (end > 0 && state.messages[end - 1].role === 'streaming') end--
+      // Extend-vs-open decision: look through a confirmed steer as well.
+      let at = end
+      while (at > 0 && state.messages[at - 1].role === 'user' && !isTurnBoundaryUser(state.messages[at - 1])) at--
+      const open = at > 0 ? state.messages[at - 1] : undefined
+      if (open?.role === 'thinking') { open.content += content; return }
+      state.messages.splice(end, 0, { role: 'thinking', content, cls: '', meta: { clientTs: mintMsgId() } })
     },
     sseChatMessage(state, action: PayloadAction<{ slot: string; role: string; content: string; ts?: string; seq?: number; cls?: string; meta?: Record<string, unknown>; kind?: string; batched?: boolean }>) {
       const { slot, role, content, ts, seq, cls, meta, kind, batched } = action.payload
