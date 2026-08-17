@@ -923,6 +923,16 @@ const GridCard: ItemContent<GridEntry, LibCtx> = ({ data: entry, context }) => {
   return <LocalCardBody a={entry.art} context={context} />
 }
 
+/** Card count at which the gallery switches from a content-sized CSS-columns
+ *  masonry to the virtualized one.
+ *
+ *  Module scope because TWO places decide on it: the gallery picks its render
+ *  mode, and the page decides which element owns vertical scrolling. Virtualized
+ *  mode brings its own scroller, so if these two ever read different numbers the
+ *  page ends up with two same-axis scrollers again — the exact defect the
+ *  single-scroller plumbing below exists to remove. */
+export const VIRTUALIZE_AT = 30
+
 /** The "Your Artifacts" grid of local artifacts. */
 function LibraryMasonry({
   entries,
@@ -949,19 +959,28 @@ function LibraryMasonry({
   // At or above it, fall back to the virtualized masonry (fixed height +
   // internal scroll) so a large library of iframe-preview cards stays
   // performant.
-  const VIRTUALIZE_AT = 30
+  const virtualized = entries.length >= VIRTUALIZE_AT
   return (
     // -mr-3 offsets each card's own mr-3 so the trailing column's gutter
     // doesn't add page width; cards carry mr-3 (gutter) + mb-3 (row gap).
-    <div ref={ref} className="-mr-3">
-      {entries.length >= VIRTUALIZE_AT ? (
+    //
+    // When virtualized, this grows to fill the page's content column (the page
+    // stops scrolling and hands the axis over) so the masonry's own scroller is
+    // the ONLY vertical scroller. `min-h-0` is what lets a flex child actually
+    // shrink to its parent instead of its content.
+    <div ref={ref} className={virtualized ? '-mr-3 flex-1 min-h-0' : '-mr-3'}>
+      {virtualized ? (
         <VirtuosoMasonry
           key={cols}
           columnCount={cols}
           data={entries}
           context={context}
           ItemContent={GridCard}
-          style={{ height: 'min(72vh, 1000px)' }}
+          // 100% of the flex-sized parent, NOT a viewport fraction: a `72vh`
+          // box does not know how much room the toolbar and folder rows above
+          // it already took, so it overflowed the page column and forced a
+          // second scroller into existence.
+          style={{ height: '100%' }}
         />
       ) : (
         <div style={{ columnCount: cols, columnGap: 0 }}>
@@ -2030,10 +2049,66 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
 
   if (isLoading) return <div className="p-6 text-muted">{i18nT('pages.artifactsPage.loading')}</div>
 
+  // Both controls below are rendered ONCE and placed differently per width, not
+  // duplicated per branch: the view switcher owns a framer `layoutId`, and two
+  // live elements sharing one id fight over the same animated indicator.
+  const viewSwitcher = (
+    <SegmentedControl
+      segments={[
+        { key: 'grid', label: i18nT('pages.artifactsPage.gallery'), icon: <LayoutDashboard size={13} />, tooltip: i18nT('pages.artifactsPage.masonry_preview_gallery') },
+        { key: 'table', label: i18nT('pages.artifactsPage.table'), icon: <TableIcon size={13} />, tooltip: i18nT('pages.artifactsPage.compact_table') },
+      ]}
+      value={view}
+      onChange={(v) => { setView(v); safeSetItem('mc-artifacts-view', v) }}
+      layoutId="artifact-view"
+      // This control sits in a content-hugging group, so its own
+      // measurement always reads "plenty of room". Even on its own line
+      // the two labelled segments do not fit beside the create actions
+      // at 320px, and they are the widest thing in the row.
+      compact={isMobile}
+    />
+  )
+  const starredToggle = (
+    <div className="inline-flex items-center rounded-lg border border-border bg-bg-elevated p-0.5" role="group" aria-label={i18nT('pages.artifactsPage.filter_starred')}>
+      <button
+        type="button"
+        onClick={() => { setPinnedOnly(true); safeSetItem('mc-artifacts-pinned-only', '1') }}
+        aria-pressed={pinnedOnly}
+        className={`px-2.5 py-1 rounded-md text-[12px] font-medium transition-colors cursor-pointer border-none inline-flex items-center gap-1 ${pinnedOnly ? 'bg-accent text-accent-fg' : 'bg-transparent text-muted hover:text-text'}`}
+      >
+        <Star size={12} className={pinnedOnly ? 'fill-current' : ''} /> {i18nT('pages.artifactsPage.starred')}
+      </button>
+      <button
+        type="button"
+        onClick={() => { setPinnedOnly(false); safeSetItem('mc-artifacts-pinned-only', '0') }}
+        aria-pressed={!pinnedOnly}
+        className={`px-2.5 py-1 rounded-md text-[12px] font-medium transition-colors cursor-pointer border-none ${!pinnedOnly ? 'bg-accent text-accent-fg' : 'bg-transparent text-muted hover:text-text'}`}
+      >
+        {i18nT('pages.artifactsPage.all')}
+      </button>
+    </div>
+  )
+
+  // The virtualized gallery brings its OWN vertical scroller. Two same-axis
+  // scrollers on one page is a defect: whichever one the finger lands in decides
+  // whether anything moves, and the page-level one has only ~113px of travel
+  // once the gallery is on screen, so a swipe that lands there stops dead after
+  // a few pixels and reads as "this card does not scroll". Measured at 390px
+  // with 42 artifacts: page column 706px tall over 819px of content, gallery
+  // scroller 608px tall over 12485px.
+  //
+  // So exactly one element owns the axis. Below the threshold the gallery is
+  // content-sized and the page column scrolls, as before.
+  const galleryOwnsScroll = view === 'grid' && gridEntries.length >= VIRTUALIZE_AT
+
   return (
     <>
       <PageHeader title={i18nT('pages.artifactsPage.artifacts')} subtitle={i18nT('pages.artifactsPage.widgets_files_and_snippets_live_tracked_with_ver')} />
-      <div className="px-2 md:px-6 pb-8 overflow-y-auto flex-1 min-h-0">
+      <div
+        className={`px-2 md:px-6 flex-1 min-h-0 ${
+          galleryOwnsScroll ? 'flex flex-col overflow-hidden' : 'pb-8 overflow-y-auto'
+        }`}
+      >
         {(errMessage || mutErr || addError) && (
           <div className="mb-4 bg-danger/10 border border-danger/20 rounded-lg p-3 flex items-start gap-3 animate-rise">
             <span className="text-danger text-lg shrink-0"><AlertTriangle className="lucide-inline" /></span>
@@ -2075,7 +2150,15 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
                       ? i18nT('pages.artifactsPage.more_actions')
                       : i18nT('pages.artifactsPage.more_ways_to_add_an_artifact')}
                     disabled={addArtifactMut.isPending}
-                    className="rounded-l-none border-l-0 px-1"
+                    // The caret holds only a 13px icon, so its content box is
+                    // ~7px shorter than the labelled half next to it (whose
+                    // text line-height sets the split button's height). The
+                    // parent centres it, which shows as a gap above AND below
+                    // the caret — `self-stretch` makes it take the row's height
+                    // instead, keeping the seam a single continuous edge without
+                    // pinning a literal height that the label's font would
+                    // outgrow.
+                    className="rounded-l-none border-l-0 px-1 self-stretch"
                   >
                     {addArtifactMut.isPending ? <Loader2 size={13} className="animate-spin" /> : <ChevronDown size={13} />}
                   </Btn>
@@ -2098,6 +2181,19 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
                       </DropdownMenuItem>
                     </>
                   )}
+                  {/* Deploy LEAVES the page rather than filtering it, so on a
+                    * phone it is the one control in the toolbar that can move
+                    * behind a tap without costing anything: keeping it visible
+                    * is what forced the filter row to wrap and left a lone
+                    * right-floated button on a line of its own. */}
+                  {isMobile && cloudDeployEnabled && (
+                    <>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem onSelect={() => navigate('/deploy')}>
+                        <Globe size={13} className="text-muted shrink-0" /> {i18nT('pages.artifactsPage.artifact_deploy')}
+                      </DropdownMenuItem>
+                    </>
+                  )}
                 </DropdownMenuContent>
               </DropdownMenu>
             </div>
@@ -2114,23 +2210,23 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
                 <FolderPlus size={13} /> {i18nT('pages.artifactsPage.new_folder')}
               </Btn>
             )}
-            <SegmentedControl
-              segments={[
-                { key: 'grid', label: i18nT('pages.artifactsPage.gallery'), icon: <LayoutDashboard size={13} />, tooltip: i18nT('pages.artifactsPage.masonry_preview_gallery') },
-                { key: 'table', label: i18nT('pages.artifactsPage.table'), icon: <TableIcon size={13} />, tooltip: i18nT('pages.artifactsPage.compact_table') },
-              ]}
-              value={view}
-              onChange={(v) => { setView(v); safeSetItem('mc-artifacts-view', v) }}
-              layoutId="artifact-view"
-              // This control sits in a content-hugging group, so its own
-              // measurement always reads "plenty of room". Even on its own line
-              // the two labelled segments do not fit beside the create actions
-              // at 320px, and they are the widest thing in the row.
-              compact={isMobile}
-            />
+            {/* On a phone the view switcher moves down to pair with the Starred
+              * toggle: both answer "what am I looking at", and putting them on
+              * one justified row gives the toolbar's last line a left AND a
+              * right edge instead of a single stranded control. */}
+            {!isMobile && viewSwitcher}
           </div>
         </div>
-        <div className="flex flex-wrap gap-2 items-center mb-3">
+        {/* Narrow-first toolbar: one control per row, every row spanning the
+          * full content width, so the four rows share one left edge and one
+          * right edge. A single `flex-wrap` row is what produced the scatter —
+          * it broke wherever the widths happened to land (search + kind on one
+          * line, a right-floated Deploy alone on the next, a left-aligned
+          * toggle on a third), giving every line a different x. From `md` up
+          * `md:contents` dissolves the mobile grouping wrappers so the same
+          * children are direct flex items again and the desktop row is
+          * byte-for-byte the layout it was. */}
+        <div className="flex flex-col gap-2 mb-3 md:flex-row md:flex-wrap md:items-center">
             <SearchInput
               placeholder={i18nT('pages.artifactsPage.filter_by_name_slug_description')}
               value={filter}
@@ -2141,48 +2237,46 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
                 sentinel, so it stays a selectable option as long as '' is present
                 in `options` — which is why it leads each array and takes its
                 visible label from the matching `optionLabels` slot. */}
-            <SimpleSelect
-              options={[...KIND_OPTIONS]}
-              optionLabels={KIND_OPTIONS.map((k) => (k ? `kind: ${k}` : i18nT('pages.artifactsPage.all_kinds')))}
-              value={kindFilter}
-              aria-label={i18nT('pages.artifactsPage.filter_by_kind')}
-              onChange={setKindFilter}
-            />
-            {/* The popup is exactly this trigger's width, so a trigger sized to
-                its own placeholder would clip the user-defined tag names it
-                lists. Floor the TRIGGER, not the panel — that keeps the two in
-                lockstep while leaving the rows readable. */}
-            <SimpleSelect
-              style={{ minWidth: 180 }}
-              options={['', ...allTags]}
-              optionLabels={[i18nT('pages.artifactsPage.all_tags'), ...allTags.map((t) => `${i18nT('pages.artifactsPage.tag')} ${t}`)]}
-              value={tagFilter}
-              aria-label={i18nT('pages.artifactsPage.filter_by_tag')}
-              onChange={setTagFilter}
-            />
-            {cloudDeployEnabled && (
+            <div className="flex gap-2 md:contents">
+              <div className="flex-1 min-w-0 md:flex-initial">
+                <SimpleSelect
+                  options={[...KIND_OPTIONS]}
+                  optionLabels={KIND_OPTIONS.map((k) => (k ? `kind: ${k}` : i18nT('pages.artifactsPage.all_kinds')))}
+                  value={kindFilter}
+                  aria-label={i18nT('pages.artifactsPage.filter_by_kind')}
+                  onChange={setKindFilter}
+                />
+              </div>
+              {/* The popup is exactly this trigger's width, so a trigger sized to
+                  its own placeholder would clip the user-defined tag names it
+                  lists. Floor the TRIGGER, not the panel — that keeps the two in
+                  lockstep while leaving the rows readable. The floor is desktop
+                  only: sharing the row half-and-half already gives the trigger
+                  ~179px at 390px, and a hard 180px floor on a phone would push
+                  the pair past the viewport instead. */}
+              <div className="flex-1 min-w-0 md:flex-initial md:min-w-[180px]">
+                <SimpleSelect
+                  options={['', ...allTags]}
+                  optionLabels={[i18nT('pages.artifactsPage.all_tags'), ...allTags.map((t) => `${i18nT('pages.artifactsPage.tag')} ${t}`)]}
+                  value={tagFilter}
+                  aria-label={i18nT('pages.artifactsPage.filter_by_tag')}
+                  onChange={setTagFilter}
+                />
+              </div>
+            </div>
+            {cloudDeployEnabled && !isMobile && (
               <Btn onClick={() => navigate('/deploy')} className="flex items-center gap-1.5 ml-auto" title={i18nT('pages.artifactsPage.artifact_deploy_aws_profiles_and_published_sites')}>
                 <Globe size={13} /> {i18nT('pages.artifactsPage.artifact_deploy')}
               </Btn>
             )}
-            <div className="inline-flex items-center rounded-lg border border-border bg-bg-elevated p-0.5" role="group" aria-label={i18nT('pages.artifactsPage.filter_starred')}>
-              <button
-                type="button"
-                onClick={() => { setPinnedOnly(true); safeSetItem('mc-artifacts-pinned-only', '1') }}
-                aria-pressed={pinnedOnly}
-                className={`px-2.5 py-1 rounded-md text-[12px] font-medium transition-colors cursor-pointer border-none inline-flex items-center gap-1 ${pinnedOnly ? 'bg-accent text-accent-fg' : 'bg-transparent text-muted hover:text-text'}`}
-              >
-                <Star size={12} className={pinnedOnly ? 'fill-current' : ''} /> {i18nT('pages.artifactsPage.starred')}
-              </button>
-              <button
-                type="button"
-                onClick={() => { setPinnedOnly(false); safeSetItem('mc-artifacts-pinned-only', '0') }}
-                aria-pressed={!pinnedOnly}
-                className={`px-2.5 py-1 rounded-md text-[12px] font-medium transition-colors cursor-pointer border-none ${!pinnedOnly ? 'bg-accent text-accent-fg' : 'bg-transparent text-muted hover:text-text'}`}
-              >
-                {i18nT('pages.artifactsPage.all')}
-              </button>
-            </div>
+            {isMobile
+              ? (
+                <div className="flex items-center justify-between gap-2">
+                  {starredToggle}
+                  {viewSwitcher}
+                </div>
+              )
+              : starredToggle}
           </div>
 
           {/* One DndContext spans breadcrumb + folder cards + gallery/table so
