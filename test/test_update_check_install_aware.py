@@ -547,6 +547,7 @@ class TestAutoApplyGuard:
         orch = object.__new__(GatewayOrchestrator)
         orch.dashboard_state = MagicMock()
         orch._auto_apply_update = AsyncMock()
+        orch._auto_apply_wheel_update = AsyncMock()
         return orch
 
     def _run(self, info: dict[str, object], *, auto_update: bool):
@@ -555,6 +556,7 @@ class TestAutoApplyGuard:
         orch = self._orchestrator()
         cfg = MagicMock()
         cfg.auto_update = auto_update
+        from kiro_crew.platform.governance import UpdatePins
         original = dict(handlers._update_info)
         try:
             handlers._update_info.clear()
@@ -565,7 +567,14 @@ class TestAutoApplyGuard:
                         "kiro_crew.platform.update_governance.update_required",
                         return_value=False,
                     ):
-                        asyncio.run(orch._check_for_updates())
+                        # No commands in the policy pins, so resolve_provider
+                        # returns None and the code falls through to the legacy
+                        # path under test.
+                        with patch(
+                            "kiro_crew.platform.governance.active_update_pins",
+                            return_value=UpdatePins(),
+                        ):
+                            asyncio.run(orch._check_for_updates())
         finally:
             handlers._update_info.clear()
             handlers._update_info.update(original)
@@ -573,11 +582,18 @@ class TestAutoApplyGuard:
 
     def test_wheel_install_notifies_instead_of_applying(self):
         orch = self._run(
-            {"available": True, "self_updatable": False, "install_kind": "wheel"},
+            {
+                "available": True,
+                "self_updatable": False,
+                "install_kind": "wheel",
+                "update_command": "curl -fsSL … | sh",
+            },
             auto_update=True,
         )
+        # The git apply must NOT run on a non-git tree.
         orch._auto_apply_update.assert_not_awaited()
-        orch.dashboard_state.push_refresh.assert_called_with("update_available")
+        # The wheel auto-apply IS called (new behavior).
+        orch._auto_apply_wheel_update.assert_awaited_once()
 
     def test_git_checkout_still_auto_applies(self):
         orch = self._run(
